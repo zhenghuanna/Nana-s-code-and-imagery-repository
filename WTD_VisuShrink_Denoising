@@ -1,0 +1,216 @@
+% =========================================================================
+% Script:  Implementation of VisuShrink (Universal Soft Threshold)
+% Description: 
+%   1. Performs DWT decomposition and plots coefficients.
+%   2. Manually implements the VisuShrink algorithm (sqtwolog + soft + sln).
+%   3. Compares the manual result with MATLAB's built-in 'wden' function.
+% Requirements: MATLAB, Wavelet Toolbox
+
+clc;
+clear;
+close all;
+%% ============================================
+% 1. Parameters Setup
+%% ============================================
+wave_type = '';     % Wavelet type
+Len = ;              % Signal length
+max_level =;          % Decomposition level
+% Set output directory 
+save_dir = './Output';
+if ~exist(save_dir,'dir')
+    mkdir(save_dir);
+end
+% 2. Data Reading
+%% ============================================
+filename = fullfile(save_dir,'.xlsx');
+raw_data = readtable(filename,'ReadVariableNames',true);
+years = raw_data.Year;
+doys  = raw_data.DOY;
+s     = raw_data{:,3};
+dates = datetime(years,1,1)+days(doys-1);
+% Unify Length
+if length(s)>=Len
+    s = s(1:Len);
+    dates = dates(1:Len);
+else
+    s = [s;zeros(Len-length(s),1)];
+    dates = [dates;dates(end)+days(1:(Len-length(dates)))'];
+end
+% 3. DWT Decomposition
+%% ============================================
+[c,l] = wavedec(s,max_level,wave_type);
+% 3. DWT Decomposition
+%% ============================================
+fig1 = figure('Visible','on');
+set(fig1,'Position',[100 100 900 1200]);
+subplot(max_level+2,1,1)
+plot(dates,s,'LineWidth',1)
+title('Original Signal')
+grid on
+xticks(dates(1):calmonths(6):dates(end))
+xtickformat('yyyy-MM')
+for i=1:max_level
+    subplot(max_level+2,1,i+1)
+    dcoef = detcoef(c,l,i);
+    plot(dcoef,'LineWidth',1)
+    title(['d' num2str(i)])
+    grid on
+end
+subplot(max_level+2,1,max_level+2)
+acoef = appcoef(c,l,wave_type,max_level);
+plot(acoef,'LineWidth',1)
+title(['a' num2str(max_level)])
+grid on
+saveas(fig1,fullfile(save_dir,'coeffs_auto.png'))
+close(fig1)
+% 5. Reconstructed Signals for Each Layer
+%% ============================================
+fig2 = figure('Visible','on');
+set(fig2,'Position',[100 100 900 1200]);
+subplot(max_level+2,1,1)
+plot(s,'LineWidth',1)
+title('Original Signal')
+grid on
+for i=1:max_level
+    subplot(max_level+2,1,i+1)
+    drec = wrcoef('d',c,l,wave_type,i);
+    plot(drec,'LineWidth',1)
+    title(['d' num2str(i)])
+    grid on
+end
+subplot(max_level+2,1,max_level+2)
+arec = wrcoef('a',c,l,wave_type,max_level);
+plot(arec,'LineWidth',1)
+title(['a' num2str(max_level)])
+grid on
+saveas(fig2,fullfile(save_dir,'reconstruction_layers_auto.png'))
+close(fig2)
+%% ============================================
+% Universal Threshold + Soft Threshold
+% MATLAB Wavelet Toolbox
+%% ============================================
+%% ============================================
+% 6.  Implementation of VisuShrink (wden: sqtwolog + soft + sln)
+%% ============================================
+% Manual wden:
+% sqtwolog + soft + sln
+%% ============================================
+[c,l] = wavedec(s,max_level,wave_type);
+% SLN: Estimate sigma using only the highest frequency D1 coefficients
+% ==============================
+d1 = detcoef(c,l,1);
+d1 = d1(:);
+sigma = median(abs(d1))/0.6745;
+% Initialize variables
+c_new = c;
+sigmas=zeros(max_level,1);
+thresholds=zeros(max_level,1);
+% Calculate threshold for each level
+%% ============================================
+N = length(s);   % Original signal length
+for i=1:max_level
+    d = detcoef(c,l,i);
+    d=d(:);
+   % SLN: Use the same sigma for all scales
+    sigmas(i)=sigma;
+    % sqtwolog
+    lambda=sigma*sqrt(2*log(N));
+    thresholds(i)=lambda;
+    % soft threshold
+    d_new=wthresh(d,'s',lambda);
+       % Write back to c (Calculate index)
+    % ==============================
+    if i==1
+     % d1 is at the end of the c vector
+        start_index = length(c)-length(d)+1;
+    else
+        start_index = length(c)...
+            -sum(l(end-i+1:end-1))...
+            -length(d)+1;
+end
+    end_index=start_index+length(d_new)-1;
+    c_new(start_index:end_index)=d_new';
+end
+% 7. Signal Reconstruction
+%% ============================================
+s_reconstructed = waverec(c_new,l,wave_type);
+s_reconstructed=s_reconstructed(1:length(s));
+% 8. Output Parameters & Save to Excel
+%% ============================================
+disp('==============================')
+disp('Noise sigma of each level')
+disp(sigmas)
+disp('==============================')
+disp('Threshold of each level')
+disp(thresholds)
+level = (1:max_level)';
+coef_length = zeros(max_level,1);
+for i=1:max_level    
+    d = detcoef(c,l,i); 
+    coef_length(i)=length(d);
+end
+threshold_table = table(...
+    level,...
+    coef_length,...
+    sigmas,...
+    thresholds,...
+    'VariableNames',...
+    {'Level','Coefficient_Length','Sigma','Threshold'});
+threshold_filename = fullfile(...
+    save_dir,...
+    'DWT_Sigma_Threshold.xlsx');
+writetable(threshold_table,threshold_filename);
+disp('=====================================')
+disp('Sigma and Threshold table saved:')
+disp(threshold_filename)
+disp('=====================================')
+% 9. Evaluation Metrics
+%% ============================================
+MSE = mean((s-s_reconstructed).^2);
+R = corr(s,s_reconstructed);
+fprintf('MSE = %.6f\n',MSE);
+fprintf('Correlation = %.6f\n',R);
+% 10. Plot Reconstruction Results
+%% ============================================
+fig3 = figure('Visible','on');
+plot(dates,s,...
+    'Color','#339900',...
+    'LineWidth',1);
+hold on
+plot(dates,s_reconstructed,...
+    'Color','#CC33CC',...
+    'LineWidth',1.5);
+title(sprintf('Universal Soft Threshold Reconstruction\nMSE = %.4f   Corr = %.4f',MSE,R),...
+    'FontSize',14)
+xlabel('Time','FontSize',12,'FontWeight','bold')
+ylabel('VH','FontSize',12,'FontWeight','bold')
+legend('Original','Universal Soft Threshold',...
+    'Location','best')
+xticks(dates(1):calmonths(4):dates(end))
+xtickformat('yyyy-MM')
+ax = gca;
+ax.FontSize = 12;
+ax.FontWeight = 'bold';
+ax.LineWidth = 1.8;
+ax.XTickLabelRotation = 45;
+grid on
+print(fig3,...
+    fullfile(save_dir,'UniversalSoftThreshold_Reconstruction.png'),...
+    '-dpng','-r900')
+close(fig3)
+% 11. Save Reconstructed Signal to Excel
+%% ============================================
+output_table = table(...
+    dates,...
+    s,...
+    s_reconstructed,...
+    'VariableNames',...
+    {'Date','Original_Signal','UniversalSoftThreshold'});
+output_filename = fullfile(...
+    save_dir,...
+    'UniversalSoftThreshold_Reconstruction.xlsx');
+writetable(output_table,output_filename);
+disp('=====================================')
+disp('Universal Soft Threshold完成！')
+disp(output_filename)
+disp('=====================================')
