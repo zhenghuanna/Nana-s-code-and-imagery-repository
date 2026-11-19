@@ -1,0 +1,249 @@
+% =========================================================================
+% Script: DWT-based Time-Series SAR Signal Reconstruction
+% Description: This script performs Discrete Wavelet Transform (DWT) 
+%              decomposition, extracts peak/trough features, calculates 
+%              mean width and amplitude for each component, and reconstructs 
+%              the signal using the best component.
+% Requirements: MATLAB, Wavelet Toolbox, Signal Processing Toolbox
+
+clc;
+clear;
+close all;
+
+%% ============================================
+% 1. Parameters
+%% ============================================
+wave_type = 'Wavelet type';
+Len = signal length;
+max_level =Maximum decomposition level;
+
+% Set output directory (Relative path for GitHub)
+save_dir = './Output'; 
+
+if ~exist(save_dir, 'dir')
+    mkdir(save_dir);
+end
+
+
+% 2. Data Reading
+%% ============================================
+% Ensure '.xlsx' is in the current directory or provide the full path
+filename = fullfile(save_dir,'.xlsx');
+raw_data = readtable(filename);
+
+years = raw_data.Year;
+doys  = raw_data.DOY;
+s     = raw_data{:,3};
+
+dates = datetime(years,1,1) + days(doys-1);
+
+%% ============================================
+% 3. Unify Length
+%% ============================================
+if length(s) >= Len
+    s = s(1:Len);
+    dates = dates(1:Len);
+else
+    s = [s; zeros(Len-length(s),1)];
+    dates = [dates;
+        dates(end)+days(1:(Len-length(dates)))'];
+end
+
+%% ============================================
+% 4. DWT Decomposition
+%% ============================================
+[c,l] = wavedec(s,max_level,wave_type);
+
+%% ============================================
+% 5. Initialization
+%% ============================================
+Energy = zeros(max_level,1);
+Amplitude = zeros(max_level,1);
+MeanWidth = zeros(max_level,1);
+PeakNumber = zeros(max_level,1);
+
+d_rec_all = cell(max_level,1);
+
+unique_years = unique(years);
+
+%% ============================================
+% 6. Core Calculation
+%% ============================================
+for i = 1:max_level
+
+    d_rec = wrcoef('d',c,l,wave_type,i);
+    d_rec_all{i} = d_rec;
+
+    %% -------------------------
+ %% 6.1 Energy
+    %% -------------------------
+    Energy(i) = sum(d_rec.^2);
+
+    %% -------------------------
+    %% 6.2 Peak and valley Extraction (Unified)
+    %% -------------------------
+    std_val = std(d_rec);
+
+    [pks, locs] = findpeaks(d_rec,...
+        'MinPeakProminence',0.2*std_val);
+
+    [vls_neg, vl_locs] = findpeaks(-d_rec,...
+        'MinPeakProminence',0.2*std_val);
+
+    vls = -vls_neg;
+
+    PeakNumber(i) = length(locs);
+
+    %% -------------------------
+     %% 6.3 Amplitude (Peak-to-valley)
+    %% -------------------------
+    if ~isempty(pks) && ~isempty(vls)
+        Amplitude(i) = mean(pks) - mean(vls);
+    else
+        Amplitude(i) = 0;
+    end
+
+    %% -------------------------
+     %% 6.4 Mean Width (Peak-to-Peak interval version)
+--------------
+if length(locs) > 1
+
+    peak_interval = diff(dates(locs));
+    MeanWidth(i) = mean(days(peak_interval));
+
+else
+
+    MeanWidth(i) = 0;
+
+end
+
+end
+
+%% ============================================
+% 7. Normalization
+%% ============================================
+Energy_norm    = Energy ./ (sum(Energy) );
+Amplitude_norm = Amplitude ./ (sum(Amplitude));
+Width_norm     = MeanWidth ./ (sum(MeanWidth));
+
+%% ============================================
+% 8. Final Score Calculation(SDI)
+%% ============================================
+FinalScore =  Amplitude_norm .* Width_norm;
+FinalScore(~isfinite(FinalScore)) = 0;
+
+%% ============================================
+% 9. Best Component Selection
+%% ============================================
+[best_score,best_level] = max(FinalScore);
+
+d_best = d_rec_all{best_level};
+a_rec  = wrcoef('a',c,l,wave_type,max_level);
+
+s_reconstructed = a_rec + d_best;
+
+MSE = mean((s - s_reconstructed).^2);
+R_final = corr(s, s_reconstructed);
+
+%% ============================================
+% 10. Output Statistics Table
+%% ============================================
+Component = strings(max_level,1);
+for i = 1:max_level
+    Component(i) = sprintf('D%d',i);
+end
+
+Statistics_Table = table(...
+Component,...
+Energy,...
+Energy_norm,...
+Amplitude,...
+Amplitude_norm,...
+PeakNumber,...
+MeanWidth,...
+Width_norm,...
+FinalScore);
+
+writetable(Statistics_Table,...
+fullfile(save_dir,'Wavelet_Stats_MeanWidth.xlsx'));
+
+%% ============================================
+% 11. Output Reconstructed Components
+%% ============================================
+Output_All = table();
+
+Output_All.Date = dates;
+Output_All.Original = s;
+
+for i = 1:max_level
+    Output_All.(['D' num2str(i)]) = d_rec_all{i};
+end
+
+Output_All.A = a_rec;
+Output_All.Best_Reconstruction = s_reconstructed;
+
+writetable(Output_All,...
+fullfile(save_dir,'All_Reconstructed.xlsx'));
+
+%% ============================================
+% 12. Visualization
+%% ============================================
+
+figure;
+bar(FinalScore);
+title('Final Score ( Amplitude × MeanWidth)');
+grid on;
+saveas(gcf, fullfile(save_dir,'FinalScore.png'));
+
+figure;
+plot(dates,s,'k'); hold on;
+plot(dates,s_reconstructed,'r','LineWidth',1.5);
+legend('Original','Reconstructed');
+title(sprintf('Best D%d | R=%.3f',best_level,R_final));
+grid on;
+saveas(gcf, fullfile(save_dir,'Reconstruction.png'));
+
+%% ============================================
+
+%% ============================================
+figure;
+set(gcf,'Position',[100 100 1200 800]);
+
+for i = 1:max_level
+
+    d_rec = d_rec_all{i};
+    subplot(max_level,1,i)
+
+    plot(dates,d_rec,'k','LineWidth',1.2);
+    hold on;
+
+    std_val = std(d_rec);
+
+    [pks, pk_locs] = findpeaks(d_rec,...
+        'MinPeakProminence',0.2*std_val);
+
+    [vls_neg, vl_locs] = findpeaks(-d_rec,...
+        'MinPeakProminence',0.2*std_val);
+
+    vls = -vls_neg;
+
+    plot(dates(pk_locs),pks,'r^','MarkerFaceColor','r');
+    plot(dates(vl_locs),vls,'bv','MarkerFaceColor','b');
+
+    title(sprintf('D%d Peak–Trough',i));
+    grid on;
+
+end
+
+saveas(gcf, fullfile(save_dir,'Peak_Trough.png'));
+
+%% ============================================
+% 13. Print Results to Console
+%% ============================================
+fprintf('\n============================\n');
+fprintf('Best Component = D%d\n',best_level);
+fprintf('Final Score = %.4f\n',best_score);
+fprintf('Mean Width = %.2f days\n',MeanWidth(best_level));
+fprintf('MSE = %.6f\n',MSE);
+fprintf('Corr = %.4f\n',R_final);
+fprintf('============================\n');
