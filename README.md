@@ -7,7 +7,7 @@ This repository contains MATLAB code for SAR  signal processing, along with rela
 - **SAR Processing**: Implementation of time-series SAR signal reconstruction.
 - **Comparison Method**: Includes the MATLAB implementation of the WTD method.
 ## Data Contents
-This repository includes the following datasets for a specific study area:
+This repository includes the following datasets:
 - Precipitation data
 - Surface soil moisture data
 - NDVI dataset
